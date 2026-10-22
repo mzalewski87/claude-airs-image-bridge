@@ -1,0 +1,10 @@
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+*.spec
+*.bak
+install_result.txt
+build.log
+test_img.png

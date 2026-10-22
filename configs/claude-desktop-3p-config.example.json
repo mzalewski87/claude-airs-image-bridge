@@ -1,0 +1,73 @@
+{
+  "inferenceGatewayBaseUrl": "http://127.0.0.1:8787",
+  "inferenceGatewayManagedClaudeCode": true,
+  "inferenceCustomHeaders": {
+    "x-portkey-metadata": "{\"tenant\":\"<YOUR_TENANT_NAME>\",\"user\":\"<YOUR_EMAIL>\",\"team\":\"engineering\",\"env\":\"prod\"}",
+    "x-portkey-fetch-integrated-models": "true",
+    "x-portkey-provider": "@<YOUR_VERTEX_INTEGRATION_SLUG>"
+  },
+  "inferenceGatewayApiKey": "<YOUR_AIGW_SECURITY_KEY>",
+  "coworkTabEnabled": false,
+  "modelDiscoveryEnabled": false,
+  "modelPrefer1mContext": true,
+  "inferenceModels": [
+    {
+      "name": "anthropic.claude-sonnet-5-5",
+      "labelOverride": "Sonnet 5.5",
+      "supports1m": true,
+      "prefer1m": false,
+      "anthropicFamilyTier": "sonnet",
+      "isFamilyDefault": true
+    },
+    {
+      "name": "anthropic.claude-opus-5-5",
+      "labelOverride": "Opus 5.5",
+      "supports1m": true,
+      "anthropicFamilyTier": "opus",
+      "isFamilyDefault": true
+    },
+    {
+      "name": "anthropic.claude-haiku-5-5",
+      "labelOverride": "Haiku 5.5",
+      "supports1m": true,
+      "anthropicFamilyTier": "haiku",
+      "isFamilyDefault": true
+    },
+    {
+      "name": "claude-argon",
+      "labelOverride": "Gemini Argon"
+    },
+    {
+      "name": "claude-flash-3-8",
+      "labelOverride": "Gemini Flash 3.8"
+    },
+    {
+      "name": "claude-flash-lite-3-5",
+      "labelOverride": "Gemini 3.5 Flash Lite"
+    },
+    {
+      "name": "claude-nano-banana-2-1",
+      "labelOverride": "Gemini Nano Banana 2.1"
+    },
+    {
+      "name": "claude-pro-3-1",
+      "labelOverride": "Gemini 3.1 Pro"
+    },
+    {
+      "name": "claude-a4b-26b",
+      "labelOverride": "Gemma 4 26B A4B"
+    },
+    {
+      "name": "claude-zhipu-5-2",
+      "labelOverride": "GLM 5.2"
+    },
+    {
+      "name": "claude-meta-4",
+      "labelOverride": "Llama 4"
+    }
+  ],
+  "defaultModelEffort": "high",
+  "modelCatalogEnabled": false,
+  "inferenceProvider": "gateway",
+  "inferenceCredentialKind": "static"
+}

@@ -1,0 +1,134 @@
+{
+  "strategy": {
+    "mode": "conditional",
+    "conditions": [
+      {
+        "query": {
+          "params.model": {
+            "$eq": "claude-argon"
+          }
+        },
+        "then": "target-gemini-argon"
+      },
+      {
+        "query": {
+          "params.model": {
+            "$eq": "claude-flash-3-8"
+          }
+        },
+        "then": "target-gemini-flash-3-8"
+      },
+      {
+        "query": {
+          "params.model": {
+            "$eq": "claude-flash-lite-3-5"
+          }
+        },
+        "then": "target-gemini-flash-lite-3-5"
+      },
+      {
+        "query": {
+          "params.model": {
+            "$eq": "claude-nano-banana-2-1"
+          }
+        },
+        "then": "target-nano-banana-2-1"
+      },
+      {
+        "query": {
+          "params.model": {
+            "$eq": "claude-pro-3-1"
+          }
+        },
+        "then": "target-gemini-pro-3-1"
+      },
+      {
+        "query": {
+          "params.model": {
+            "$eq": "claude-a4b-26b"
+          }
+        },
+        "then": "target-a4b-26b"
+      },
+      {
+        "query": {
+          "params.model": {
+            "$eq": "claude-zhipu-5-2"
+          }
+        },
+        "then": "target-zhipu-5-2"
+      },
+      {
+        "query": {
+          "params.model": {
+            "$eq": "claude-meta-4"
+          }
+        },
+        "then": "target-meta-4"
+      }
+    ],
+    "default": "target-passthrough"
+  },
+  "targets": [
+    {
+      "name": "target-gemini-argon",
+      "passthrough": true,
+      "override_params": {
+        "model": "gemini-4-argon"
+      }
+    },
+    {
+      "name": "target-gemini-flash-3-8",
+      "passthrough": true,
+      "override_params": {
+        "model": "gemini-3.8-flash"
+      }
+    },
+    {
+      "name": "target-gemini-flash-lite-3-5",
+      "passthrough": true,
+      "override_params": {
+        "model": "gemini-3.5-flash-lite"
+      }
+    },
+    {
+      "name": "target-nano-banana-2-1",
+      "passthrough": true,
+      "override_params": {
+        "model": "nano-banana-2-1"
+      }
+    },
+    {
+      "name": "target-gemini-pro-3-1",
+      "passthrough": true,
+      "override_params": {
+        "model": "gemini-3.1-pro"
+      }
+    },
+    {
+      "name": "target-a4b-26b",
+      "passthrough": true,
+      "override_params": {
+        "model": "a4b-26b"
+      }
+    },
+    {
+      "name": "target-zhipu-5-2",
+      "passthrough": true,
+      "override_params": {
+        "model": "glm-5.2"
+      }
+    },
+    {
+      "name": "target-meta-4",
+      "passthrough": true,
+      "override_params": {
+        "model": "llama-4"
+      }
+    },
+    {
+      "name": "target-passthrough",
+      "passthrough": true
+    }
+  ]
+}
