@@ -45,4 +45,23 @@ for model, expect in (('anthropic.claude-sonnet-5-5', 0), ('claude-argon', 1)):
 
 # 5. invalid JSON passes through
 assert rewrite_body(b'not json') == (b'not json', None, 0)
+
+# 6. media pruning: older media beyond max_recent is pruned
+many_msgs = [ask]
+for i in range(10):
+    many_msgs.append({'role': 'assistant', 'content': [{'type': 'tool_use', 'id': f't{i}', 'name': 'Read', 'input': {}}]})
+    many_msgs.append({'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': f't{i}', 'content': [IMG]}]})
+out_pruned, moved_pruned = rewrite_messages(many_msgs, max_recent=3)
+assert moved_pruned == 3, f'Expected 3 moved, got {moved_pruned}'
+# Verify older images replaced by text notes
+assert any('omitted from prompt context' in json.dumps(m) for m in out_pruned)
+# Verify strict alternation: no consecutive identical roles
+pr_roles = roles(out_pruned)
+assert not any(pr_roles[i] == pr_roles[i+1] for i in range(len(pr_roles)-1)), pr_roles
+
+# 7. token calculation
+from proxy import calculate_approx_tokens
+tokens, mdl = calculate_approx_tokens(json.dumps({'model': 'claude-argon', 'messages': [ask, call, tr]}))
+assert tokens > 1000 and mdl == 'claude-argon', (tokens, mdl)
+
 print('all rewrite tests passed')

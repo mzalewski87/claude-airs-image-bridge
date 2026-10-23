@@ -28,6 +28,7 @@ try {
 
     robocopy (Join-Path $PSScriptRoot 'dist\PortkeyImageProxy') $dest /MIR /NFL /NDL /NJH /NP | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE)" }
+    icacls $dest /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Null                                   # Users modify for future updates without UAC
     New-Item -ItemType Directory -Force $data | Out-Null
     icacls $data /grant '*S-1-5-19:(OI)(CI)M' /grant '*S-1-5-32-545:(OI)(CI)RX' | Out-Null   # LocalService modify, Users read
 

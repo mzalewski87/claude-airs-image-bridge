@@ -16,6 +16,8 @@ Gdy Claude Desktop działa w trybie **3P Gateway** z modelami innymi niż Anthro
    - Dla modeli Gemini adapter Anthropic->Gemini w bramce AI Gateway serializuje obrazy wewnątrz `tool_result` jako **surowy tekst base64** (~1,47 znaku na token — ponad 52 000 tokenów dla małego obrazka 160x120 PNG i ponad 300 000 tokenów dla pełnego zrzutu ekranu). Po kilku zrzutach ekranu sesja przekracza limit 1 048 576 tokenów kontekstu i zawiesza się na stałe błędem `API Error: 400 (no body)`.
    - Umieszczenie obrazu obok `tool_result` w tej samej turze użytkownika powoduje jego ciche pominięcie przez adapter.
    - Umieszczenie obrazu w **osobnej, kolejnej turze użytkownika (`user`)** pozwala modelowi Gemini przetworzyć obraz natywnie (~1 280 tokenów).
+3. **Brak obsługi `count_tokens` w Vertex AI na Portkey**: Claude Desktop stale odpytuje endpoint `/v1/messages/count_tokens`, który na bramce Portkey dla Vertex AI zwraca `HTTP 500: messagesCountTokens is not supported by vertex-ai`. Proxy przechwytuje ten endpoint lokalnie i zwraca natychmiast `200 OK` z oszacowaną liczbą tokenów.
+4. **Limit rozmiaru zapytania i timeouty przy długich sesjach (`MAX_RECENT_MEDIA = 6`)**: W długich sesjach (np. czytanie dokumentów PDF przez MCP) kumulują się dziesiątki obrazów w base64 (payload rzędu 30–50 MB). Przekracza to limit REST Vertex AI (20 MB), a czas odpowiedzi przekracza 36-sekundowy timeout bramki Portkey (błędy 500/502). Proxy automatycznie przycina historyczne multimedia z dawnych tur, pozostawiając w pełnej formie 6 najświeższych obrazów (aktywny kontekst).
 
 ### Porównanie zużycia tokenów (obraz 160x120 PNG, 77 072 znaków base64)
 

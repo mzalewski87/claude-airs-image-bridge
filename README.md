@@ -46,11 +46,14 @@ When Claude Desktop runs in **3P Gateway mode** with non-Anthropic models expose
 
 - Listens locally on `http://127.0.0.1:8787` and forwards requests to `https://aigw.portkey.ai`.
 - Requests for models starting with `anthropic.` are forwarded **byte-for-byte untouched**.
+- **Historical media pruning (`MAX_RECENT_MEDIA = 6`)**: In long-running sessions (e.g. reading PDFs with MCP tools), conversations accumulate dozens of base64 images, causing request bodies to balloon (30–50MB) and latency to exceed upstream gateway timeouts (36s+). The bridge retains only the most recent 6 media items (active context) and replaces older historical media with concise text placeholders.
 - Requests for non-`anthropic.` models containing `image` or `document` blocks inside (or next to) a `tool_result` are rewritten on the fly:
   1. The media block inside `tool_result` is replaced with a short text placeholder: `[1 image(s)/document(s) from this tool result are attached in the next user message.]`
   2. A synthetic assistant bridge turn is appended: `"Please share the images returned by the tool call above."`
   3. A synthetic user turn is appended with the `tool_use_id` label and the original `image`/`document` blocks.
-- Streaming responses (SSE) are forwarded back in real time without buffering.
+  4. Consecutive identical turns (`user` followed by `user`) are merged to guarantee strict turn alternation required by Gemini / Vertex AI.
+- **Local `count_tokens` interception**: Google Vertex AI on Portkey does not support `/v1/messages/count_tokens` (returns `HTTP 500: messagesCountTokens is not supported by vertex-ai`). The bridge intercepts this endpoint locally, approximates tokens (~4 chars/token + ~1600/image), and returns immediate `200 OK`, preventing error loops in Claude Desktop.
+- Streaming responses (SSE) are forwarded back in real time without buffering. Upstream errors (HTTP >= 400) are fully logged with error payloads.
 
 ---
 
