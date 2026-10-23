@@ -18,12 +18,13 @@ proxy:
 Usage: python -I proxy.py [--port 8787] [--upstream https://aigw.portkey.ai]
 Then set inferenceGatewayBaseUrl to http://127.0.0.1:8787 in the Claude-3p config.
 """
-import argparse, copy, http.client, json, logging, logging.handlers, sys, time, urllib.parse
+import argparse, copy, http.client, json, logging, logging.handlers, os, sys, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 log = logging.getLogger('portkey_image_proxy')
 DEFAULT_PORT = 8787
 DEFAULT_UPSTREAM = 'https://aigw.portkey.ai'
+DEFAULT_TIMEOUT = int(os.environ.get('PORTKEY_PROXY_TIMEOUT', '600'))
 
 MEDIA = ('image', 'document')
 MAX_RECENT_MEDIA = 6
@@ -276,7 +277,8 @@ class Handler(BaseHTTPRequestHandler):
             headers['Content-Length'] = str(len(raw))
 
         conn_cls = http.client.HTTPSConnection if self.upstream.scheme == 'https' else http.client.HTTPConnection
-        conn = conn_cls(self.upstream.netloc, timeout=180)
+        timeout = getattr(self, 'timeout', getattr(self.server, 'timeout', DEFAULT_TIMEOUT))
+        conn = conn_cls(self.upstream.netloc, timeout=timeout)
         status = 502
         headers_sent = False
         try:
@@ -351,11 +353,13 @@ def setup_logging(log_file=None):
     log.setLevel(logging.INFO)
 
 
-def make_server(port=DEFAULT_PORT, upstream=DEFAULT_UPSTREAM):
+def make_server(port=DEFAULT_PORT, upstream=DEFAULT_UPSTREAM, timeout=DEFAULT_TIMEOUT):
     Handler.upstream = urllib.parse.urlsplit(upstream)
+    Handler.timeout = timeout
     server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
     server.daemon_threads = True
-    log.info(f'Portkey image proxy on http://127.0.0.1:{port} -> {upstream}')
+    server.timeout = timeout
+    log.info(f'Portkey image proxy on http://127.0.0.1:{port} -> {upstream} (timeout: {timeout}s)')
     return server
 
 
@@ -363,10 +367,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--port', type=int, default=DEFAULT_PORT)
     ap.add_argument('--upstream', default=DEFAULT_UPSTREAM)
+    ap.add_argument('--timeout', type=int, default=DEFAULT_TIMEOUT, help='Upstream connection and read timeout in seconds')
     ap.add_argument('--log-file')
     args = ap.parse_args()
     setup_logging(args.log_file)
-    make_server(args.port, args.upstream).serve_forever()
+    make_server(args.port, args.upstream, timeout=args.timeout).serve_forever()
 
 
 if __name__ == '__main__':
