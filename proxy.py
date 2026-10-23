@@ -270,6 +270,8 @@ class Handler(BaseHTTPRequestHandler):
 
         headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_BY_HOP}
         headers['Host'] = self.upstream.netloc
+        if 'user-agent' not in (k.lower() for k in headers) or 'python-urllib' in headers.get('User-Agent', '').lower():
+            headers['User-Agent'] = 'Anthropic/Claude'
         if raw or self.command in ('POST', 'PUT', 'PATCH'):
             headers['Content-Length'] = str(len(raw))
 
