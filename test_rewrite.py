@@ -64,4 +64,19 @@ from proxy import calculate_approx_tokens
 tokens, mdl = calculate_approx_tokens(json.dumps({'model': 'claude-argon', 'messages': [ask, call, tr]}))
 assert tokens > 1000 and mdl == 'claude-argon', (tokens, mdl)
 
+# 8. multi-tool use with consecutive assistant and user turns (preserves matching functionResponse pairing)
+multi_msgs = [
+    {"role": "user", "content": "do tasks"},
+    {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]},
+    {"role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "Read", "input": {}}]},
+    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]},
+    {"role": "user", "content": [{"type": "text", "text": "scaling note"}]},
+    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "content": [IMG]}]}
+]
+out_multi, moved_multi = rewrite_messages(multi_msgs)
+assert moved_multi == 1
+assert roles(out_multi) == ["user", "assistant", "user", "assistant", "user"]
+assert len(out_multi[1]["content"]) == 2
+assert [b["tool_use_id"] for b in out_multi[2]["content"]] == ["t1", "t2"]
+
 print('all rewrite tests passed')

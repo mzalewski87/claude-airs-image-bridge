@@ -38,8 +38,44 @@ def needs_rewrite(model):
     return isinstance(model, str) and not model.startswith('anthropic.')
 
 
+def merge_consecutive_roles(messages):
+    """Merge adjacent messages with the same role and filter empty text blocks."""
+    out = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        c = msg.get('content', [])
+        if isinstance(c, list):
+            c = [b for b in c if not (isinstance(b, dict) and b.get('type') == 'text' and not b.get('text'))]
+        if not c:
+            continue
+        msg = dict(msg, content=c)
+
+        if not out:
+            out.append(copy.deepcopy(msg))
+            continue
+        prev = out[-1]
+        if prev.get('role') == msg.get('role'):
+            prev_c = prev.get('content', [])
+            msg_c = msg.get('content', [])
+            if isinstance(prev_c, str): prev_c = [{'type': 'text', 'text': prev_c}]
+            if isinstance(msg_c, str): msg_c = [{'type': 'text', 'text': msg_c}]
+            if isinstance(prev_c, list) and isinstance(msg_c, list):
+                out[-1] = dict(prev, content=prev_c + msg_c)
+            else:
+                out.append(copy.deepcopy(msg))
+        else:
+            out.append(copy.deepcopy(msg))
+    return out
+
+
 def rewrite_messages(messages, max_recent=MAX_RECENT_MEDIA):
     """Return (new_messages, moved_count). Pure function; input is not modified."""
+    # Pre-merge consecutive identical roles so multi-tool calls and split user responses
+    # remain grouped before media extraction. This guarantees that all tool_results matching
+    # an assistant's tool_use calls remain grouped in the immediate follow-up user turn.
+    messages = merge_consecutive_roles(messages)
+
     all_media = []
     for m_idx, msg in enumerate(messages):
         content = msg.get('content') if isinstance(msg, dict) else None
@@ -132,24 +168,7 @@ def rewrite_messages(messages, max_recent=MAX_RECENT_MEDIA):
         step2.append({'role': 'user', 'content': user_c})
 
     # Step 3: Merge consecutive identical roles to guarantee strict role alternation
-    out = []
-    for msg in step2:
-        if not out:
-            out.append(msg)
-            continue
-        prev = out[-1]
-        if isinstance(prev, dict) and isinstance(msg, dict) and prev.get('role') == msg.get('role'):
-            prev_c = prev.get('content', [])
-            msg_c = msg.get('content', [])
-            if isinstance(prev_c, str): prev_c = [{'type': 'text', 'text': prev_c}]
-            if isinstance(msg_c, str): msg_c = [{'type': 'text', 'text': msg_c}]
-            if isinstance(prev_c, list) and isinstance(msg_c, list):
-                out[-1] = dict(prev, content=prev_c + msg_c)
-            else:
-                out.append(msg)
-        else:
-            out.append(msg)
-
+    out = merge_consecutive_roles(step2)
     return out, moved_total
 
 
@@ -289,11 +308,16 @@ class Handler(BaseHTTPRequestHandler):
             if status >= 400:
                 err_body = resp.read()
                 err_text = err_body[:500].decode('utf-8', 'replace')
-                log.error(f'Upstream HTTP {status} for {self.command} {self.path} model={model}: {err_text}')
+                hdrs = dict(resp.getheaders())
+                log.error(f'Upstream HTTP {status} for {self.command} {self.path} model={model}: {err_text} (headers: {hdrs})')
+                if not err_body:
+                    err_msg = hdrs.get('x-portkey-error') or f'Upstream HTTP {status} error from {self.upstream.netloc}'
+                    err_body = json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': err_msg}}).encode('utf-8')
                 self.send_response(status, resp.reason)
                 for k, v in resp.getheaders():
-                    if k.lower() not in HOP_BY_HOP or k.lower() == 'content-length':
+                    if k.lower() not in HOP_BY_HOP and k.lower() not in ('content-length', 'content-type'):
                         self.send_header(k, v)
+                self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(err_body)))
                 self.end_headers()
                 headers_sent = True
