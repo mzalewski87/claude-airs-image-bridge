@@ -18,13 +18,14 @@ proxy:
 Usage: python -I proxy.py [--port 8787] [--upstream https://aigw.portkey.ai]
 Then set inferenceGatewayBaseUrl to http://127.0.0.1:8787 in the Claude-3p config.
 """
-import argparse, copy, http.client, json, logging, logging.handlers, os, sys, time, urllib.parse
+import argparse, copy, http.client, json, logging, logging.handlers, os, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 log = logging.getLogger('portkey_image_proxy')
 DEFAULT_PORT = 8787
 DEFAULT_UPSTREAM = 'https://aigw.portkey.ai'
-DEFAULT_TIMEOUT = int(os.environ.get('PORTKEY_PROXY_TIMEOUT', '600'))
+DEFAULT_TIMEOUT = int(os.environ.get('PORTKEY_PROXY_TIMEOUT', '1200'))
+PING_EVENT = b'event: ping\ndata: {"type": "ping"}\n\n'
 
 MEDIA = ('image', 'document')
 MAX_RECENT_MEDIA = 6
@@ -300,6 +301,81 @@ class Handler(BaseHTTPRequestHandler):
         conn = conn_cls(self.upstream.netloc, timeout=timeout)
         status = 502
         headers_sent = False
+
+        is_stream = bool(raw and (b'"stream": true' in raw or b'"stream":true' in raw))
+
+        if is_stream:
+            write_lock = threading.Lock()
+            stop_ping = threading.Event()
+            last_active = [time.time()]
+
+            # Send 200 text/event-stream headers immediately to client (TTFB < 5ms).
+            # This completely eliminates client connection timeouts and resets the watchdog.
+            self.send_response(200, 'OK')
+            self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
+            self.send_header('Cache-Control', 'no-cache')
+            self.send_header('Connection', 'keep-alive')
+            self.send_header('Transfer-Encoding', 'chunked')
+            self.end_headers()
+            headers_sent = True
+
+            def ping_worker():
+                ping_chunk = b'%x\r\n%s\r\n' % (len(PING_EVENT), PING_EVENT)
+                while not stop_ping.wait(15.0):
+                    if time.time() - last_active[0] >= 14.0:
+                        try:
+                            with write_lock:
+                                self.wfile.write(ping_chunk)
+                                self.wfile.flush()
+                            last_active[0] = time.time()
+                        except Exception:
+                            break
+
+            ping_thread = threading.Thread(target=ping_worker, daemon=True)
+            ping_thread.start()
+
+            try:
+                conn.request(self.command, self.path, body=raw or None, headers=headers)
+                resp = conn.getresponse()
+                status = resp.status
+
+                if status >= 400:
+                    stop_ping.set()
+                    err_body = resp.read()
+                    err_text = err_body[:500].decode('utf-8', 'replace')
+                    hdrs = dict(resp.getheaders())
+                    log.error(f'Upstream HTTP {status} for {self.command} {self.path} model={model}: {err_text} (headers: {hdrs})')
+                    err_msg = err_text if err_body else (hdrs.get('x-portkey-error') or f'Upstream HTTP {status} error from {self.upstream.netloc}')
+                    err_payload = b'event: error\ndata: ' + json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': err_msg}}).encode('utf-8') + b'\n\n'
+                    with write_lock:
+                        self.wfile.write(b'%x\r\n%s\r\n0\r\n\r\n' % (len(err_payload), err_payload))
+                        self.wfile.flush()
+                    return
+
+                while True:
+                    chunk = resp.read1(65536) if hasattr(resp, 'read1') else resp.read(65536)
+                    if not chunk:
+                        break
+                    with write_lock:
+                        self.wfile.write(b'%x\r\n%s\r\n' % (len(chunk), chunk))
+                        self.wfile.flush()
+                    last_active[0] = time.time()
+
+                stop_ping.set()
+                with write_lock:
+                    self.wfile.write(b'0\r\n\r\n')
+                    self.wfile.flush()
+            except Exception as e:
+                stop_ping.set()
+                log.warning(f'Proxy streaming notice for {self.path}: {type(e).__name__}: {e}')
+            finally:
+                stop_ping.set()
+                conn.close()
+                note = f' moved={moved}' if moved else ''
+                log.info(f'{self.command} {self.path} model={model} status={status}{note} {time.time() - started:.1f}s')
+            return
+
+        # Synchronous handling for non-streaming requests
         try:
             conn.request(self.command, self.path, body=raw or None, headers=headers)
             resp = conn.getresponse()
