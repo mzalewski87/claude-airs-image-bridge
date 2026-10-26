@@ -445,6 +445,9 @@ class Handler(BaseHTTPRequestHandler):
 def setup_logging(log_file=None):
     """Log to stdout, or to a rotating file (service mode)."""
     if log_file:
+        log_dir = os.path.dirname(os.path.abspath(log_file))
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
         handler = logging.handlers.RotatingFileHandler(log_file, maxBytes=2_000_000, backupCount=3, encoding='utf-8')
     else:
         handler = logging.StreamHandler(sys.stdout)
