@@ -37,6 +37,40 @@ ASSISTANT_BRIDGE = 'Please share the images returned by the tool call above.'
 USER_INTRO = 'Images returned by the tool call(s) above, in order:'
 
 
+def get_override_portkey_key():
+    """Allow overriding Portkey API key via environment variable or ~/.portkey_api_key."""
+    env_key = os.environ.get('PORTKEY_API_KEY')
+    if env_key and env_key.strip():
+        return env_key.strip()
+    key_file = os.path.expanduser('~/.portkey_api_key')
+    if os.path.isfile(key_file):
+        try:
+            with open(key_file, 'r', encoding='utf-8') as f:
+                val = f.read().strip()
+                if val:
+                    return val
+        except Exception:
+            pass
+    return None
+
+
+def get_fallback_portkey_key():
+    """Allow fallback Portkey API key via environment variable or ~/.portkey_fallback_key."""
+    env_key = os.environ.get('PORTKEY_FALLBACK_KEY')
+    if env_key and env_key.strip():
+        return env_key.strip()
+    key_file = os.path.expanduser('~/.portkey_fallback_key')
+    if os.path.isfile(key_file):
+        try:
+            with open(key_file, 'r', encoding='utf-8') as f:
+                val = f.read().strip()
+                if val:
+                    return val
+        except Exception:
+            pass
+    return None
+
+
 def is_anthropic_model(model):
     return isinstance(model, str) and model.startswith('anthropic.')
 
@@ -448,6 +482,12 @@ class Handler(BaseHTTPRequestHandler):
 
         headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_BY_HOP}
         headers['Host'] = self.upstream.netloc
+        override_key = get_override_portkey_key()
+        if override_key:
+            for k in list(headers.keys()):
+                if k.lower() == 'x-portkey-api-key':
+                    del headers[k]
+            headers['x-portkey-api-key'] = override_key
         if 'user-agent' not in (k.lower() for k in headers) or 'python-urllib' in headers.get('User-Agent', '').lower():
             headers['User-Agent'] = 'Anthropic/Claude'
         if raw or self.command in ('POST', 'PUT', 'PATCH'):
@@ -501,6 +541,37 @@ class Handler(BaseHTTPRequestHandler):
                     err_body = resp.read()
                     err_text = err_body[:500].decode('utf-8', 'replace')
                     hdrs = dict(resp.getheaders())
+
+                    # Auto-failover on HTTP 412 Usage Limit Exceeded if fallback key configured
+                    if status == 412 and (b'Usage Limit Exceeded' in err_body or b'"04"' in err_body):
+                        fallback_key = get_fallback_portkey_key()
+                        current_key = headers.get('x-portkey-api-key')
+                        if fallback_key and fallback_key != current_key:
+                            log.warning("Portkey API key limit exceeded (HTTP 412). Retrying with fallback key...")
+                            headers['x-portkey-api-key'] = fallback_key
+                            conn.close()
+                            conn = conn_cls(self.upstream.netloc, timeout=timeout)
+                            conn.request(self.command, self.path, body=raw or None, headers=headers)
+                            resp = conn.getresponse()
+                            status = resp.status
+                            if status < 400:
+                                while True:
+                                    chunk = resp.read1(65536) if hasattr(resp, 'read1') else resp.read(65536)
+                                    if not chunk:
+                                        break
+                                    with write_lock:
+                                        self.wfile.write(b'%x\r\n%s\r\n' % (len(chunk), chunk))
+                                        self.wfile.flush()
+                                    last_active[0] = time.time()
+                                with write_lock:
+                                    self.wfile.write(b'0\r\n\r\n')
+                                    self.wfile.flush()
+                                return
+                            else:
+                                err_body = resp.read()
+                                err_text = err_body[:500].decode('utf-8', 'replace')
+                                hdrs = dict(resp.getheaders())
+
                     log.error(f'Upstream HTTP {status} for {self.command} {self.path} model={model}: {err_text} (headers: {hdrs})')
                     err_msg = err_text if err_body else (hdrs.get('x-portkey-error') or f'Upstream HTTP {status} error from {self.upstream.netloc}')
                     err_payload = b'event: error\ndata: ' + json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': err_msg}}).encode('utf-8') + b'\n\n'
@@ -542,6 +613,45 @@ class Handler(BaseHTTPRequestHandler):
                 err_body = resp.read()
                 err_text = err_body[:500].decode('utf-8', 'replace')
                 hdrs = dict(resp.getheaders())
+
+                if status == 412 and (b'Usage Limit Exceeded' in err_body or b'"04"' in err_body):
+                    fallback_key = get_fallback_portkey_key()
+                    current_key = headers.get('x-portkey-api-key')
+                    if fallback_key and fallback_key != current_key:
+                        log.warning("Portkey API key limit exceeded (HTTP 412). Retrying with fallback key...")
+                        headers['x-portkey-api-key'] = fallback_key
+                        conn.close()
+                        conn = conn_cls(self.upstream.netloc, timeout=timeout)
+                        conn.request(self.command, self.path, body=raw or None, headers=headers)
+                        resp = conn.getresponse()
+                        status = resp.status
+                        if status < 400:
+                            self.send_response(resp.status, resp.reason)
+                            length = resp.getheader('Content-Length')
+                            for k, v in resp.getheaders():
+                                if k.lower() not in HOP_BY_HOP or k.lower() == 'content-length':
+                                    self.send_header(k, v)
+                            if length is None:
+                                self.send_header('Transfer-Encoding', 'chunked')
+                            self.end_headers()
+                            headers_sent = True
+                            while True:
+                                chunk = resp.read1(65536) if hasattr(resp, 'read1') else resp.read(65536)
+                                if not chunk:
+                                    break
+                                if length is None:
+                                    self.wfile.write(b'%x\r\n%s\r\n' % (len(chunk), chunk))
+                                else:
+                                    self.wfile.write(chunk)
+                                self.wfile.flush()
+                            if length is None:
+                                self.wfile.write(b'0\r\n\r\n')
+                            return
+                        else:
+                            err_body = resp.read()
+                            err_text = err_body[:500].decode('utf-8', 'replace')
+                            hdrs = dict(resp.getheaders())
+
                 log.error(f'Upstream HTTP {status} for {self.command} {self.path} model={model}: {err_text} (headers: {hdrs})')
                 if not err_body:
                     err_msg = hdrs.get('x-portkey-error') or f'Upstream HTTP {status} error from {self.upstream.netloc}'
