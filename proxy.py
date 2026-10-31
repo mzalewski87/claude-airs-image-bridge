@@ -35,10 +35,41 @@ ASSISTANT_BRIDGE = 'Please share the images returned by the tool call above.'
 USER_INTRO = 'Images returned by the tool call(s) above, in order:'
 
 
+def is_anthropic_model(model):
+    return isinstance(model, str) and model.startswith('anthropic.')
+
+
 def needs_rewrite(model):
     # All models routed through the proxy to Portkey/Vertex AI need media pruning
     # and role normalization to avoid Vertex AI's hard 30MB payload limit (HTTP 400).
     return isinstance(model, str)
+
+
+def sanitize_thinking_blocks(messages, is_anthropic=False):
+    """Strip invalid thinking blocks. Anthropic API strictly validates HMAC signatures on
+    thinking blocks and rejects calls (HTTP 400) when switching models (e.g. Gemini -> Opus)
+    because Gemini produces empty or mismatched signatures."""
+    out = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            out.append(msg)
+            continue
+        role = msg.get('role')
+        content = msg.get('content')
+        if role == 'assistant' and isinstance(content, list):
+            new_content = []
+            for b in content:
+                if isinstance(b, dict) and b.get('type') == 'thinking':
+                    # If targeting Anthropic, or if signature is empty/missing, strip it
+                    if is_anthropic or not b.get('signature'):
+                        continue
+                new_content.append(b)
+            if not new_content:
+                new_content = [{'type': 'text', 'text': '[Thought process]'}]
+            out.append(dict(msg, content=new_content))
+        else:
+            out.append(copy.deepcopy(msg))
+    return out
 
 
 def merge_consecutive_roles(messages):
@@ -208,7 +239,9 @@ def rewrite_body(raw):
     model = body.get('model') if isinstance(body, dict) else None
     if not needs_rewrite(model) or not isinstance(body.get('messages'), list):
         return raw, model, 0
-    messages, moved = rewrite_messages(body['messages'])
+    is_anthropic = is_anthropic_model(model)
+    messages = sanitize_thinking_blocks(body['messages'], is_anthropic=is_anthropic)
+    messages, moved = rewrite_messages(messages)
     if not moved and messages == body['messages']:
         return raw, model, 0
     body['messages'] = messages

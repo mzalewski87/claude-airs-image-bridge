@@ -86,4 +86,18 @@ assert roles(out_multi) == ["user", "assistant", "user", "assistant", "user"]
 assert len(out_multi[1]["content"]) == 2
 assert [b["tool_use_id"] for b in out_multi[2]["content"]] == ["t1", "t2"]
 
+# 9. thinking block sanitization for anthropic models (prevents 400 invalid signature on model switch)
+anthropic_msgs = [
+    ask,
+    {'role': 'assistant', 'content': [
+        {'type': 'thinking', 'thinking': 'reasoning from gemini', 'signature': ''},
+        {'type': 'text', 'text': 'final text'}
+    ]}
+]
+raw_anthropic = json.dumps({'model': 'anthropic.claude-opus-5-5', 'messages': anthropic_msgs}).encode()
+new_body, m, mv = rewrite_body(raw_anthropic)
+parsed = json.loads(new_body)
+assert not any(b.get('type') == 'thinking' for b in parsed['messages'][1]['content']), 'Thinking block should be stripped for Anthropic model'
+assert any(b.get('text') == 'final text' for b in parsed['messages'][1]['content'])
+
 print('all rewrite tests passed')
