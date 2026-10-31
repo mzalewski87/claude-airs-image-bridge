@@ -54,10 +54,17 @@ for i in range(10):
 out_pruned, moved_pruned = rewrite_messages(many_msgs, max_recent=3)
 assert moved_pruned == 3, f'Expected 3 moved, got {moved_pruned}'
 # Verify older images replaced by text notes
-assert any('omitted from prompt context' in json.dumps(m) for m in out_pruned)
+assert any('previously inspected' in json.dumps(m) for m in out_pruned)
 # Verify strict alternation: no consecutive identical roles
 pr_roles = roles(out_pruned)
 assert not any(pr_roles[i] == pr_roles[i+1] for i in range(len(pr_roles)-1)), pr_roles
+
+# 6b. current turn media is NEVER pruned even if exceeding max_recent
+batch_msgs = [ask, {'role': 'assistant', 'content': [{'type': 'tool_use', 'id': 'tb', 'name': 'Read', 'input': {}}]}]
+batch_msgs.append({'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'tb', 'content': [IMG]*8}]})
+out_batch, moved_batch = rewrite_messages(batch_msgs, max_recent=3)
+assert moved_batch == 8, f'Expected 8 moved, got {moved_batch}'
+assert not any('previously inspected' in json.dumps(m) for m in out_batch), 'Current turn should never be pruned'
 
 # 7. token calculation
 from proxy import calculate_approx_tokens

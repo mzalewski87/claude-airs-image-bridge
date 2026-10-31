@@ -28,7 +28,7 @@ DEFAULT_TIMEOUT = int(os.environ.get('PORTKEY_PROXY_TIMEOUT', '1200'))
 PING_EVENT = b'event: ping\ndata: {"type": "ping"}\n\n'
 
 MEDIA = ('image', 'document')
-MAX_RECENT_MEDIA = 6
+MAX_RECENT_MEDIA = int(os.environ.get('MAX_RECENT_MEDIA', '20'))
 HOP_BY_HOP = {'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te',
               'trailers', 'transfer-encoding', 'upgrade', 'host', 'content-length', 'accept-encoding'}
 ASSISTANT_BRIDGE = 'Please share the images returned by the tool call above.'
@@ -77,7 +77,15 @@ def rewrite_messages(messages, max_recent=MAX_RECENT_MEDIA):
     # an assistant's tool_use calls remain grouped in the immediate follow-up user turn.
     messages = merge_consecutive_roles(messages)
 
-    all_media = []
+    # Collect media locations, separating historical turns from the latest turn.
+    # The latest turn (assistant's pending tool responses) must NEVER be pruned,
+    # as pruning freshly fetched images causes the LLM to get trapped in an infinite re-fetch loop.
+    last_user_idx = len(messages) - 1
+    while last_user_idx >= 0 and messages[last_user_idx].get('role') != 'user':
+        last_user_idx -= 1
+
+    historical_media = []
+    current_media = []
     for m_idx, msg in enumerate(messages):
         content = msg.get('content') if isinstance(msg, dict) else None
         if not isinstance(content, list):
@@ -86,13 +94,29 @@ def rewrite_messages(messages, max_recent=MAX_RECENT_MEDIA):
             if not isinstance(block, dict):
                 continue
             if block.get('type') in MEDIA:
-                all_media.append((m_idx, b_idx, None))
+                item = (m_idx, b_idx, None)
+                if m_idx == last_user_idx:
+                    current_media.append(item)
+                else:
+                    historical_media.append(item)
             elif block.get('type') == 'tool_result' and isinstance(block.get('content'), list):
                 for s_idx, sub in enumerate(block['content']):
                     if isinstance(sub, dict) and sub.get('type') in MEDIA:
-                        all_media.append((m_idx, b_idx, s_idx))
+                        item = (m_idx, b_idx, s_idx)
+                        if m_idx == last_user_idx:
+                            current_media.append(item)
+                        else:
+                            historical_media.append(item)
 
-    pruned_set = set(all_media[:-max_recent]) if (max_recent and len(all_media) > max_recent) else set()
+    if max_recent:
+        allowed_hist = max(0, max_recent - len(current_media))
+        if allowed_hist > 0:
+            pruned_set = set(historical_media[:-allowed_hist])
+        else:
+            pruned_set = set(historical_media)
+    else:
+        pruned_set = set()
+
     moved_total = 0
 
     # Step 1: Prune historical media to save context window and avoid gateway timeouts
@@ -112,13 +136,13 @@ def rewrite_messages(messages, max_recent=MAX_RECENT_MEDIA):
                 new_content.append(block)
                 continue
             if (m_idx, b_idx, None) in pruned_set:
-                new_content.append({'type': 'text', 'text': '[Historical media omitted from prompt context to prevent gateway timeout]'})
+                new_content.append({'type': 'text', 'text': '[Historical media previously inspected; details retained in memory. Do not re-fetch.]'})
             elif block.get('type') == 'tool_result' and isinstance(block.get('content'), list):
                 new_subs = []
                 for s_idx, sub in enumerate(block['content']):
                     if (m_idx, b_idx, s_idx) in pruned_set:
                         t_id = block.get('tool_use_id', '')
-                        new_subs.append({'type': 'text', 'text': f'[Historical media from tool {t_id} omitted from prompt context to prevent gateway timeout]'})
+                        new_subs.append({'type': 'text', 'text': f'[Historical media from tool {t_id} previously inspected; details retained in memory. Do not re-fetch.]'})
                     else:
                         new_subs.append(sub)
                 new_content.append(dict(block, content=new_subs))
