@@ -28,7 +28,9 @@ DEFAULT_TIMEOUT = int(os.environ.get('PORTKEY_PROXY_TIMEOUT', '1200'))
 PING_EVENT = b'event: ping\ndata: {"type": "ping"}\n\n'
 
 MEDIA = ('image', 'document')
-MAX_RECENT_MEDIA = int(os.environ.get('MAX_RECENT_MEDIA', '20'))
+MAX_RECENT_MEDIA = int(os.environ.get('MAX_RECENT_MEDIA', '10'))
+MAX_TOOL_RESULT_CHARS = int(os.environ.get('MAX_TOOL_RESULT_CHARS', '1200'))
+KEEP_RECENT_TOOL_MESSAGES = int(os.environ.get('KEEP_RECENT_TOOL_MESSAGES', '24'))
 HOP_BY_HOP = {'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te',
               'trailers', 'transfer-encoding', 'upgrade', 'host', 'content-length', 'accept-encoding'}
 ASSISTANT_BRIDGE = 'Please share the images returned by the tool call above.'
@@ -230,6 +232,99 @@ def rewrite_messages(messages, max_recent=MAX_RECENT_MEDIA):
     return out, moved_total
 
 
+def prune_historical_tool_results(messages, keep_recent_msgs=KEEP_RECENT_TOOL_MESSAGES, max_chars=MAX_TOOL_RESULT_CHARS):
+    """Truncate oversized tool_result texts in older turns to prevent exceeding the
+    model's context window (e.g. Vertex AI 1,048,576 token hard limit).
+    Preserves the most recent `keep_recent_msgs` turns 100% intact."""
+    if not isinstance(messages, list) or len(messages) <= keep_recent_msgs:
+        return messages, 0, 0
+
+    total_text_chars = 0
+    for m in messages:
+        if isinstance(m, dict) and isinstance(m.get('content'), list):
+            for b in m['content']:
+                if isinstance(b, dict):
+                    if b.get('type') == 'text':
+                        total_text_chars += len(b.get('text', ''))
+                    elif b.get('type') == 'tool_result':
+                        tc = b.get('content')
+                        if isinstance(tc, str):
+                            total_text_chars += len(tc)
+                        elif isinstance(tc, list):
+                            for sub in tc:
+                                if isinstance(sub, dict) and sub.get('type') == 'text':
+                                    total_text_chars += len(sub.get('text', ''))
+
+    # If total text is relatively small (< 600k chars ~ 250k tokens) and messages < 40, no truncation needed
+    if total_text_chars < 600_000 and len(messages) < 40:
+        return messages, 0, 0
+
+    # If context is massive (> 1.5M chars ~ 700k tokens), be slightly more aggressive with older turns
+    if total_text_chars > 1_500_000:
+        keep_recent_msgs = min(keep_recent_msgs, 16)
+        max_chars = min(max_chars, 800)
+
+    cutoff = len(messages) - keep_recent_msgs
+    truncated_count = 0
+    saved_chars = 0
+
+    out = []
+    for idx, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            out.append(msg)
+            continue
+        if idx >= cutoff:
+            out.append(copy.deepcopy(msg))
+            continue
+
+        content = msg.get('content')
+        if not isinstance(content, list):
+            out.append(copy.deepcopy(msg))
+            continue
+
+        new_content = []
+        msg_changed = False
+        for b in content:
+            if isinstance(b, dict) and b.get('type') == 'tool_result':
+                tc = b.get('content')
+                if isinstance(tc, str) and len(tc) > max_chars:
+                    head = tc[:int(max_chars * 0.7)]
+                    tail = tc[-int(max_chars * 0.3):]
+                    omitted = len(tc) - max_chars
+                    new_tc = head + f'\n... [tool output truncated by proxy to fit context window; omitted {omitted} chars] ...\n' + tail
+                    b = dict(b, content=new_tc)
+                    truncated_count += 1
+                    saved_chars += len(tc) - len(new_tc)
+                    msg_changed = True
+                elif isinstance(tc, list):
+                    new_sub = []
+                    sub_changed = False
+                    for sub in tc:
+                        if isinstance(sub, dict) and sub.get('type') == 'text' and len(sub.get('text', '')) > max_chars:
+                            t = sub.get('text', '')
+                            head = t[:int(max_chars * 0.7)]
+                            tail = t[-int(max_chars * 0.3):]
+                            omitted = len(t) - max_chars
+                            new_t = head + f'\n... [tool output truncated by proxy to fit context window; omitted {omitted} chars] ...\n' + tail
+                            new_sub.append(dict(sub, text=new_t))
+                            truncated_count += 1
+                            saved_chars += len(t) - len(new_t)
+                            sub_changed = True
+                        else:
+                            new_sub.append(sub)
+                    if sub_changed:
+                        b = dict(b, content=new_sub)
+                        msg_changed = True
+            new_content.append(b)
+
+        if msg_changed:
+            out.append(dict(msg, content=new_content))
+        else:
+            out.append(copy.deepcopy(msg))
+
+    return out, truncated_count, saved_chars
+
+
 def rewrite_body(raw):
     """Return (bytes, model, moved). Leaves the body untouched unless something moved or pruned."""
     try:
@@ -242,8 +337,11 @@ def rewrite_body(raw):
     is_anthropic = is_anthropic_model(model)
     messages = sanitize_thinking_blocks(body['messages'], is_anthropic=is_anthropic)
     messages, moved = rewrite_messages(messages)
-    if not moved and messages == body['messages']:
+    messages, trunc_count, saved_chars = prune_historical_tool_results(messages)
+    if not moved and not trunc_count and messages == body['messages']:
         return raw, model, 0
+    if trunc_count:
+        log.info(f'Pruned {trunc_count} historical tool_result blocks (saved {saved_chars:,} chars / ~{saved_chars//4:,} tokens) to fit within context limit')
     body['messages'] = messages
     return json.dumps(body, ensure_ascii=False).encode('utf-8'), model, moved
 

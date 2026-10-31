@@ -100,4 +100,21 @@ parsed = json.loads(new_body)
 assert not any(b.get('type') == 'thinking' for b in parsed['messages'][1]['content']), 'Thinking block should be stripped for Anthropic model'
 assert any(b.get('text') == 'final text' for b in parsed['messages'][1]['content'])
 
+# 10. historical tool result pruning to prevent 1M token / 30MB payload limits
+from proxy import prune_historical_tool_results
+oversized_msgs = []
+for i in range(50):
+    oversized_msgs.append({'role': 'assistant', 'content': [{'type': 'tool_use', 'id': f't{i}', 'name': 'bash', 'input': {}}]})
+    oversized_msgs.append({'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': f't{i}', 'content': 'X' * 5000}]})
+pruned_msgs, trunc_cnt, saved_chars = prune_historical_tool_results(oversized_msgs, keep_recent_msgs=20, max_chars=1000)
+assert trunc_cnt > 0, 'Should have truncated older tool results'
+assert saved_chars > 50000, f'Expected large saved chars, got {saved_chars}'
+# Most recent 20 messages must be untouched
+assert oversized_msgs[-1]['content'][0]['content'] == 'X' * 5000
+assert pruned_msgs[-1]['content'][0]['content'] == 'X' * 5000
+# First message must be truncated with note
+first_res = pruned_msgs[1]['content'][0]['content']
+assert len(first_res) < 2000
+assert 'truncated by proxy' in first_res
+
 print('all rewrite tests passed')
