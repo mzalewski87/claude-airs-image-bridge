@@ -37,11 +37,11 @@ src = [plain, call, tr3]
 out, moved = rewrite_messages(src)
 assert moved == 0 and out == src
 
-# 4. body level: anthropic.* models are never rewritten, others are
-for model, expect in (('anthropic.claude-sonnet-5-5', 0), ('claude-argon', 1)):
+# 4. body level: all models (including anthropic.* on Vertex AI) are rewritten and protected from 30MB limits
+for model in ('anthropic.claude-sonnet-5-5', 'anthropic.claude-opus-5-5', 'claude-argon'):
     raw = json.dumps({'model': model, 'messages': [ask, call, tr]}).encode()
     new, m, mv = rewrite_body(raw)
-    assert mv == expect and (new == raw) == (expect == 0), (model, mv)
+    assert mv == 1 and new != raw, (model, mv)
 
 # 5. invalid JSON passes through
 assert rewrite_body(b'not json') == (b'not json', None, 0)

@@ -36,7 +36,9 @@ USER_INTRO = 'Images returned by the tool call(s) above, in order:'
 
 
 def needs_rewrite(model):
-    return isinstance(model, str) and not model.startswith('anthropic.')
+    # All models routed through the proxy to Portkey/Vertex AI need media pruning
+    # and role normalization to avoid Vertex AI's hard 30MB payload limit (HTTP 400).
+    return isinstance(model, str)
 
 
 def merge_consecutive_roles(messages):
